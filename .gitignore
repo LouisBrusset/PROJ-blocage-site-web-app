@@ -1,0 +1,58 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor settings
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files (keep examples only)
+.env
+.env.*
+!.env.example
+
+# Python backend
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node / React Native
+node_modules/
+.expo/
+.expo-shared/
+.metro-health-check*
+*.tsbuildinfo
+
+# React Native Android/iOS local/build artifacts
+BlockApp/android/.gradle/
+BlockApp/android/build/
+BlockApp/android/app/build/
+BlockApp/android/local.properties
+BlockApp/ios/Pods/
+BlockApp/ios/build/
+BlockApp/ios/DerivedData/
+BlockApp/*.xcworkspace
+
+# Mobile build outputs
+*.apk
+*.aab
+*.ipa
+
+# Test coverage
+coverage/
