@@ -60,7 +60,7 @@ public class WifiMonitorService extends android.app.Service {
         createNotificationChannels();
         startForegroundCompat();
         registerNetworkCallback();
-        return START_NOT_STICKY;
+        return START_STICKY;
     }
 
     @Override

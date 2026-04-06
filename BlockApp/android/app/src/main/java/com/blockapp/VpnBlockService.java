@@ -18,6 +18,7 @@ import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Local VPN service that intercepts DNS and implements:
@@ -42,6 +43,9 @@ public class VpnBlockService extends VpnService {
     private ParcelFileDescriptor vpnInterface;
     private Thread               packetThread;
     private final AtomicBoolean  running = GLOBAL_RUNNING;
+
+    // Socket UDP réutilisé pour tous les forwards DNS (évite l'allocation par requête)
+    private final AtomicReference<DatagramSocket> upstreamSocket = new AtomicReference<>();
 
     // ── Blocked domains (simple list of lower-case domain strings) ───────────
 
@@ -86,6 +90,8 @@ public class VpnBlockService extends VpnService {
             try { vpnInterface.close(); } catch (Exception ignored) {}
             vpnInterface = null;
         }
+        DatagramSocket sock = upstreamSocket.getAndSet(null);
+        if (sock != null && !sock.isClosed()) sock.close();
     }
 
     // ── Load config from local DB ─────────────────────────────────────────────
@@ -130,6 +136,8 @@ public class VpnBlockService extends VpnService {
         FileOutputStream out = new FileOutputStream(vpnInterface.getFileDescriptor());
         byte[] buf = new byte[32767];
         long lastRefresh = System.currentTimeMillis();
+        // Rafraîchissement toutes les 5 minutes au lieu de 30 secondes
+        final long REFRESH_INTERVAL_MS = 5 * 60 * 1_000L;
 
         while (running.get()) {
             try {
@@ -137,7 +145,7 @@ public class VpnBlockService extends VpnService {
                 if (len <= 0) continue;
 
                 long now = System.currentTimeMillis();
-                if (now - lastRefresh > 30_000) {
+                if (now - lastRefresh > REFRESH_INTERVAL_MS) {
                     lastRefresh = now;
                     new Thread(this::fetchBlockedDomains).start();
                 }
@@ -204,11 +212,18 @@ public class VpnBlockService extends VpnService {
     // ── DNS upstream forward ──────────────────────────────────────────────────
 
     private byte[] forwardToUpstream(byte[] dnsPayload) {
-        DatagramSocket socket = null;
         try {
-            socket = new DatagramSocket();
-            protect(socket);
-            socket.setSoTimeout(3000);
+            DatagramSocket socket = upstreamSocket.get();
+            if (socket == null || socket.isClosed()) {
+                socket = new DatagramSocket();
+                protect(socket);
+                socket.setSoTimeout(3000);
+                if (!upstreamSocket.compareAndSet(null, socket)) {
+                    // Une autre requête a déjà mis un socket en place, utiliser le sien
+                    socket.close();
+                    socket = upstreamSocket.get();
+                }
+            }
             InetAddress upstream = InetAddress.getByName(UPSTREAM_DNS);
             DatagramPacket req = new DatagramPacket(dnsPayload, dnsPayload.length, upstream, 53);
             socket.send(req);
@@ -220,9 +235,10 @@ public class VpnBlockService extends VpnService {
             return result;
         } catch (Exception e) {
             Log.e(TAG, "DNS forward failed: " + e.getMessage());
+            // Socket potentiellement corrompu, le réinitialiser
+            DatagramSocket old = upstreamSocket.getAndSet(null);
+            if (old != null && !old.isClosed()) old.close();
             return null;
-        } finally {
-            if (socket != null && !socket.isClosed()) socket.close();
         }
     }
 
