@@ -43,6 +43,15 @@ node_modules/
 BlockApp/android/.gradle/
 BlockApp/android/build/
 BlockApp/android/app/build/
+!BlockApp/android/app/build/
+BlockApp/android/app/build/*
+!BlockApp/android/app/build/outputs/
+BlockApp/android/app/build/outputs/*
+!BlockApp/android/app/build/outputs/apk/
+BlockApp/android/app/build/outputs/apk/*
+!BlockApp/android/app/build/outputs/apk/release/
+BlockApp/android/app/build/outputs/apk/release/*
+!BlockApp/android/app/build/outputs/apk/release/*.apk
 BlockApp/android/local.properties
 BlockApp/ios/Pods/
 BlockApp/ios/build/
@@ -54,5 +63,15 @@ BlockApp/*.xcworkspace
 *.aab
 *.ipa
 
+# Allow committing release APK artifact
+!BlockApp/android/app/build/outputs/apk/release/*.apk
+
+# Android signing — NEVER commit these
+*.keystore
+!**/debug.keystore
+
 # Test coverage
 coverage/
+
+# MDP
+mdp_keystore.txt
