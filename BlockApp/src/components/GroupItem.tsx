@@ -36,8 +36,11 @@ export default function GroupItem({ group, urlCount, onToggle, onEdit, onDelete 
       <TouchableOpacity onPress={() => onEdit(group)} style={s.btn}>
         <Text style={s.icon}>✏️</Text>
       </TouchableOpacity>
-      <TouchableOpacity onPress={confirmDelete} style={s.btn}>
-        <Text style={s.icon}>🗑️</Text>
+      <TouchableOpacity
+        onPress={group.is_active ? undefined : confirmDelete}
+        style={[s.btn, group.is_active && s.btnDisabled]}
+      >
+        <Text style={[s.icon, group.is_active && s.iconDisabled]}>🗑️</Text>
       </TouchableOpacity>
     </View>
   );
@@ -63,5 +66,7 @@ const s = StyleSheet.create({
   name: { fontSize: 15, fontWeight: '600', color: '#1a1a2e' },
   count: { fontSize: 12, color: '#888', marginTop: 2 },
   btn: { padding: 4 },
+  btnDisabled: { opacity: 0.3 },
   icon: { fontSize: 16 },
+  iconDisabled: {},
 });

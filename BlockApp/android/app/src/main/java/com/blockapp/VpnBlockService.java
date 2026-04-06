@@ -10,9 +10,6 @@ import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
-
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.net.DatagramPacket;
@@ -20,7 +17,6 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -39,10 +35,6 @@ public class VpnBlockService extends VpnService {
 
     private static final String VPN_DNS_ADDRESS = "10.0.0.2";
     private static final String UPSTREAM_DNS    = "8.8.8.8";
-    private static final byte[] REDIRECT_IP     = {10, 0, 0, 3}; // virtual redirect server IP
-    private static final int    OUR_TCP_ISN     = 0x41424344;    // arbitrary TCP initial seq
-
-    private String backendUrl = "http://192.168.1.43:8001/api";
 
     private static final AtomicBoolean GLOBAL_RUNNING = new AtomicBoolean(false);
     public static boolean isRunning() { return GLOBAL_RUNNING.get(); }
@@ -51,24 +43,9 @@ public class VpnBlockService extends VpnService {
     private Thread               packetThread;
     private final AtomicBoolean  running = GLOBAL_RUNNING;
 
-    // ── Blocked entries ───────────────────────────────────────────────────────
+    // ── Blocked domains (simple list of lower-case domain strings) ───────────
 
-    private static class BlockEntry {
-        String url;
-        String action;      // "block" | "redirect" | "close"
-        String redirectUrl; // only for action="redirect"
-    }
-
-    private final List<BlockEntry> blockedEntries = new ArrayList<>();
-
-    // ── TCP session state (for redirect server) ───────────────────────────────
-
-    private static class TcpSession {
-        int           clientSeq; // next expected byte from client
-        StringBuilder buf = new StringBuilder();
-    }
-
-    private final ConcurrentHashMap<Integer, TcpSession> tcpSessions = new ConcurrentHashMap<>();
+    private final List<String> blockedDomains = new ArrayList<>();
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -77,9 +54,6 @@ public class VpnBlockService extends VpnService {
         if (intent != null && "STOP".equals(intent.getAction())) {
             stopSelf();
             return START_NOT_STICKY;
-        }
-        if (intent != null && intent.hasExtra("backendUrl")) {
-            backendUrl = intent.getStringExtra("backendUrl");
         }
         startForegroundNotification();
         startVpn();
@@ -114,35 +88,16 @@ public class VpnBlockService extends VpnService {
         }
     }
 
-    // ── Fetch config ──────────────────────────────────────────────────────────
+    // ── Load config from local DB ─────────────────────────────────────────────
 
     private void fetchBlockedDomains() {
-        synchronized (blockedEntries) { blockedEntries.clear(); }
         try {
-            java.net.URL url = new java.net.URL(backendUrl + "/vpn/config");
-            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(5000);
-            if (conn.getResponseCode() == 200) {
-                java.io.InputStream is = conn.getInputStream();
-                byte[] buf = new byte[8192];
-                int n = is.read(buf);
-                String json = new String(buf, 0, n);
-                JSONObject obj = new JSONObject(json);
-                JSONArray arr = obj.getJSONArray("blocked");
-                synchronized (blockedEntries) {
-                    for (int i = 0; i < arr.length(); i++) {
-                        JSONObject e = arr.getJSONObject(i);
-                        BlockEntry entry = new BlockEntry();
-                        entry.url         = e.getString("url").toLowerCase();
-                        entry.action      = e.optString("action", "block");
-                        entry.redirectUrl = e.isNull("redirect_url") ? null : e.optString("redirect_url", null);
-                        blockedEntries.add(entry);
-                    }
-                }
-                Log.d(TAG, "Loaded " + blockedEntries.size() + " entries");
+            List<String> domains = BlockerDatabase.getInstance(this).getActiveBlockedDomains();
+            synchronized (blockedDomains) {
+                blockedDomains.clear();
+                blockedDomains.addAll(domains);
             }
-            conn.disconnect();
+            Log.d(TAG, "Loaded " + blockedDomains.size() + " domains from DB");
         } catch (Exception e) {
             Log.e(TAG, "fetchBlockedDomains failed: " + e.getMessage());
         }
@@ -155,8 +110,7 @@ public class VpnBlockService extends VpnService {
             Builder builder = new Builder()
                 .setSession("BlockApp")
                 .addAddress("10.0.0.1", 24)
-                .addRoute(VPN_DNS_ADDRESS, 32)  // virtual DNS server
-                .addRoute("10.0.0.3", 32)       // virtual redirect HTTP server
+                .addRoute(VPN_DNS_ADDRESS, 32)
                 .addDnsServer(VPN_DNS_ADDRESS)
                 .setMtu(1500);
             try { builder.addDisallowedApplication(getPackageName()); } catch (Exception ignored) {}
@@ -222,9 +176,6 @@ public class VpnBlockService extends VpnService {
             byte[] resp = resolveDns(dns);
             if (resp == null) return;
             buildAndWriteUdpResponse(packet, ihl, srcPort, resp, out);
-
-        } else if (protocol == 6) { // TCP → redirect server
-            handleTcpRedirect(packet, ihl, out);
         }
     }
 
@@ -235,169 +186,19 @@ public class VpnBlockService extends VpnService {
             return forwardToUpstream(dns.rawPayload);
         }
 
-        BlockEntry entry = findEntry(dns.queryName);
-        if (entry == null) return forwardToUpstream(dns.rawPayload);
+        if (!isDomainBlocked(dns.queryName)) return forwardToUpstream(dns.rawPayload);
 
-        Log.d(TAG, "[" + entry.action + "] " + dns.queryName);
-
-        if ("redirect".equals(entry.action) && entry.redirectUrl != null) {
-            // Return our virtual redirect server IP so the browser connects to it
-            return dns.buildARecordResponse(REDIRECT_IP);
-        }
-        // block / close → NXDOMAIN (browser shows "site unreachable")
+        Log.d(TAG, "[block] " + dns.queryName);
         return dns.buildNxDomainResponse();
     }
 
-    private BlockEntry findEntry(String domain) {
-        synchronized (blockedEntries) {
-            for (BlockEntry e : blockedEntries) {
-                if (DnsPacket.matches(domain, e.url)) return e;
+    private boolean isDomainBlocked(String domain) {
+        synchronized (blockedDomains) {
+            for (String blocked : blockedDomains) {
+                if (DnsPacket.matches(domain, blocked)) return true;
             }
         }
-        return null;
-    }
-
-    // ── TCP redirect server (HTTP only, port 80) ──────────────────────────────
-
-    private void handleTcpRedirect(byte[] packet, int ihl, FileOutputStream out) {
-        try {
-            if (packet.length < ihl + 20) return;
-            // Only intercept packets to REDIRECT_IP (10.0.0.3)
-            if (packet[16] != REDIRECT_IP[0] || packet[17] != REDIRECT_IP[1] ||
-                packet[18] != REDIRECT_IP[2] || packet[19] != REDIRECT_IP[3]) return;
-
-            int srcPort   = toInt16(packet, ihl);
-            int dstPort   = toInt16(packet, ihl+2);
-            if (dstPort != 80) return; // HTTP only — HTTPS requires TLS, not supported
-
-            int tcpHdrLen = ((packet[ihl+12] >> 4) & 0xF) * 4;
-            int flags     = packet[ihl+13] & 0xFF;
-            int seqNum    = toInt32(packet, ihl+4);
-
-            byte[] clientIp = {packet[12], packet[13], packet[14], packet[15]};
-
-            if ((flags & 0x04) != 0 || (flags & 0x01) != 0) { // RST or FIN
-                tcpSessions.remove(srcPort);
-                return;
-            }
-
-            if ((flags & 0x02) != 0 && (flags & 0x10) == 0) { // SYN
-                TcpSession session = new TcpSession();
-                session.clientSeq = seqNum + 1;
-                tcpSessions.put(srcPort, session);
-                writeTcp(out, clientIp, srcPort, 0x12 /* SYN|ACK */, OUR_TCP_ISN, seqNum + 1, null);
-                return;
-            }
-
-            TcpSession session = tcpSessions.get(srcPort);
-            if (session == null) return;
-
-            int dataStart = ihl + tcpHdrLen;
-            int dataLen   = packet.length - dataStart;
-
-            if (dataLen > 0 && (flags & 0x08) != 0) { // PSH — HTTP request data
-                session.buf.append(new String(packet, dataStart, dataLen, "ISO-8859-1"));
-                String http = session.buf.toString();
-                if (!http.contains("\r\n\r\n") && !http.contains("\n\n")) return; // incomplete
-
-                String redirectUrl = resolveRedirectUrl(http);
-                if (redirectUrl == null) redirectUrl = "about:blank";
-
-                String httpResp = "HTTP/1.1 302 Found\r\nLocation: " + redirectUrl +
-                                  "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                byte[] respBytes = httpResp.getBytes("ISO-8859-1");
-
-                int ourDataSeq = OUR_TCP_ISN + 1;
-                int clientAck  = seqNum + dataLen;
-                writeTcp(out, clientIp, srcPort, 0x10 /* ACK */,           ourDataSeq, clientAck, null);
-                writeTcp(out, clientIp, srcPort, 0x19 /* FIN|PSH|ACK */,   ourDataSeq, clientAck, respBytes);
-                tcpSessions.remove(srcPort);
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "TCP redirect error: " + e.getMessage());
-        }
-    }
-
-    private String resolveRedirectUrl(String httpRequest) {
-        String host = null;
-        for (String line : httpRequest.split("\r?\n")) {
-            if (line.toLowerCase().startsWith("host:")) {
-                host = line.substring(5).trim().split(":")[0].toLowerCase();
-                break;
-            }
-        }
-        if (host == null) return null;
-        synchronized (blockedEntries) {
-            for (BlockEntry e : blockedEntries) {
-                if ("redirect".equals(e.action) && e.redirectUrl != null && DnsPacket.matches(host, e.url)) {
-                    return e.redirectUrl;
-                }
-            }
-        }
-        return null;
-    }
-
-    // ── TCP packet builder ────────────────────────────────────────────────────
-
-    private void writeTcp(FileOutputStream out, byte[] dstIp, int dstPort,
-                           int flags, int seq, int ack, byte[] data) throws Exception {
-        int dataLen  = data != null ? data.length : 0;
-        int tcpLen   = 20 + dataLen;
-        int totalLen = 20 + tcpLen;
-        byte[] pkt   = new byte[totalLen];
-
-        // IP header
-        pkt[0] = 0x45; pkt[1] = 0x00;
-        pkt[2] = (byte)((totalLen >> 8) & 0xFF); pkt[3] = (byte)(totalLen & 0xFF);
-        pkt[4] = 0x00; pkt[5] = 0x00; pkt[6] = 0x00; pkt[7] = 0x00;
-        pkt[8] = 0x40; pkt[9] = 0x06; // TTL=64, TCP
-        pkt[10] = 0x00; pkt[11] = 0x00;
-        pkt[12] = REDIRECT_IP[0]; pkt[13] = REDIRECT_IP[1];
-        pkt[14] = REDIRECT_IP[2]; pkt[15] = REDIRECT_IP[3];
-        pkt[16] = dstIp[0]; pkt[17] = dstIp[1]; pkt[18] = dstIp[2]; pkt[19] = dstIp[3];
-        int ipCs = ipChecksum(pkt, 0, 20);
-        pkt[10] = (byte)((ipCs >> 8) & 0xFF); pkt[11] = (byte)(ipCs & 0xFF);
-
-        // TCP header
-        pkt[20] = 0x00; pkt[21] = 0x50; // src port = 80
-        pkt[22] = (byte)((dstPort >> 8) & 0xFF); pkt[23] = (byte)(dstPort & 0xFF);
-        pkt[24] = (byte)((seq >> 24) & 0xFF); pkt[25] = (byte)((seq >> 16) & 0xFF);
-        pkt[26] = (byte)((seq >> 8)  & 0xFF); pkt[27] = (byte)(seq & 0xFF);
-        pkt[28] = (byte)((ack >> 24) & 0xFF); pkt[29] = (byte)((ack >> 16) & 0xFF);
-        pkt[30] = (byte)((ack >> 8)  & 0xFF); pkt[31] = (byte)(ack & 0xFF);
-        pkt[32] = 0x50; // data offset = 5 (20 bytes header)
-        pkt[33] = (byte)(flags & 0xFF);
-        pkt[34] = (byte)0xFF; pkt[35] = (byte)0xFF; // window = 65535
-        pkt[36] = 0x00; pkt[37] = 0x00; // checksum placeholder
-        pkt[38] = 0x00; pkt[39] = 0x00; // urgent pointer
-        if (data != null) System.arraycopy(data, 0, pkt, 40, dataLen);
-
-        int tcpCs = tcpChecksum(pkt, tcpLen);
-        pkt[36] = (byte)((tcpCs >> 8) & 0xFF); pkt[37] = (byte)(tcpCs & 0xFF);
-
-        out.write(pkt);
-        out.flush();
-    }
-
-    private int tcpChecksum(byte[] packet, int tcpLen) {
-        // TCP pseudo-header: src IP + dst IP + 0x00 + protocol(6) + TCP length
-        byte[] pseudo = new byte[12 + tcpLen];
-        System.arraycopy(packet, 12, pseudo, 0, 4); // src IP
-        System.arraycopy(packet, 16, pseudo, 4, 4); // dst IP
-        pseudo[8] = 0; pseudo[9] = 0x06;
-        pseudo[10] = (byte)((tcpLen >> 8) & 0xFF);
-        pseudo[11] = (byte)(tcpLen & 0xFF);
-        System.arraycopy(packet, 20, pseudo, 12, tcpLen);
-        return ipChecksum(pseudo, 0, pseudo.length);
-    }
-
-    private static int toInt16(byte[] b, int off) {
-        return ((b[off] & 0xFF) << 8) | (b[off+1] & 0xFF);
-    }
-
-    private static int toInt32(byte[] b, int off) {
-        return ((b[off] & 0xFF) << 24) | ((b[off+1] & 0xFF) << 16) |
-               ((b[off+2] & 0xFF) << 8)  |  (b[off+3] & 0xFF);
+        return false;
     }
 
     // ── DNS upstream forward ──────────────────────────────────────────────────

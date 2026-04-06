@@ -3,7 +3,6 @@ import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   Alert, ScrollView, Switch,
 } from 'react-native';
-import { API_BASE_URL } from '../config';
 import { hasPin, setPin, removePin, verifyPin } from '../services/api';
 import { WifiMonitor, requestWifiPermissions } from '../services/wifi';
 import PinModal from '../components/PinModal';
@@ -98,16 +97,6 @@ export default function SettingsScreen() {
 
   return (
     <ScrollView style={s.container} contentContainerStyle={s.content}>
-      {/* Server URL */}
-      <Text style={s.section}>Connexion serveur</Text>
-      <View style={s.card}>
-        <Text style={s.label}>URL du backend (actuelle)</Text>
-        <Text style={s.urlDisplay}>{API_BASE_URL}</Text>
-        <Text style={s.hint}>
-          Pour changer l'IP, modifier le fichier src/config.ts et rebuilder l'app.
-        </Text>
-      </View>
-
       {/* PIN */}
       <Text style={s.section}>Sécurité PIN</Text>
       <View style={s.card}>
