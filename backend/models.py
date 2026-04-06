@@ -1,13 +1,6 @@
 from sqlmodel import SQLModel, Field, Relationship
 from typing import Optional, List
-from enum import Enum
 from pydantic import BaseModel
-
-
-class ActionType(str, Enum):
-    BLOCK = "block"
-    REDIRECT = "redirect"
-    CLOSE = "close"
 
 
 class Group(SQLModel, table=True):
@@ -34,8 +27,6 @@ class BlockedUrl(SQLModel, table=True):
     url: str
     description: Optional[str] = None
     is_active: bool = True
-    action: ActionType = ActionType.BLOCK
-    redirect_url: Optional[str] = None
     group_id: Optional[int] = Field(default=None, foreign_key="group.id")
     group: Optional[Group] = Relationship(back_populates="urls")
 
@@ -43,16 +34,12 @@ class BlockedUrl(SQLModel, table=True):
 class BlockedUrlCreate(SQLModel):
     url: str
     description: Optional[str] = None
-    action: ActionType = ActionType.BLOCK
-    redirect_url: Optional[str] = None
     group_id: Optional[int] = None
 
 
 class BlockedUrlUpdate(SQLModel):
     url: Optional[str] = None
     description: Optional[str] = None
-    action: Optional[ActionType] = None
-    redirect_url: Optional[str] = None
     group_id: Optional[int] = None
     is_active: Optional[bool] = None
 

@@ -136,7 +136,7 @@ npx react-native start
 
 ---
 
-### 4. Forwarder le port Metro vers le téléphone
+### 4. Forwarder les ports vers le téléphone (Wi-Fi uniquement)
 
 **USB** : déjà fait à l'étape 2 avec `adb reverse` — passer directement à l'étape 5.
 
@@ -147,14 +147,37 @@ npx react-native start
 # Trouver l'IP de WSL2
 wsl hostname -I
 
-# Forwarder le port 8081 de Windows → WSL2
+# Forwarder le port 8081 (Metro) de Windows → WSL2
 netsh interface portproxy add v4tov4 listenport=8081 listenaddress=0.0.0.0 connectport=8081 connectaddress=<IP_WSL2>
 
-# Ouvrir le firewall si pas déjà fait
+# Forwarder le port 8000 (backend FastAPI) de Windows → WSL2
+netsh interface portproxy add v4tov4 listenport=8000 listenaddress=0.0.0.0 connectport=8000 connectaddress=<IP_WSL2>
+
+# Ouvrir le firewall pour les deux ports (une seule fois)
 netsh advfirewall firewall add rule name="Metro RN" dir=in action=allow protocol=TCP localport=8081
+netsh advfirewall firewall add rule name="FastAPI BlockApp" dir=in action=allow protocol=TCP localport=8000
 ```
 
+> L'IP WSL2 change à chaque redémarrage de Windows. Relancer `wsl hostname -I` et refaire les deux `portproxy add` si le backend n'est plus joignable.
+
 **Sur le téléphone** : secouer → Settings → Debug server host → `<IP_WINDOWS>:8081`
+
+---
+
+Rendre miroir ADB entre Windows et WSL2 (pour que `adb` fonctionne dans les deux environnements) :
+
+Dans le fichier `.config/wsl.conf` de WSL2 (`/etc/wsl.conf`) :
+
+
+---
+
+Il peut aussi falloir desactiver le pare-feu windows si WSL2 ne reconnait pas ADB en wi-fi (même après avoir ajouté les règles) :
+
+Dans powerShell Windows (admin) :
+```powershell
+New-NetFirewallRule -DisplayName "WSL2 Backend 8001" -Direction Inbound -Protocol TCP -LocalPort 8001 -Action Allow
+New-NetFirewallRule -DisplayName "WSL2 Metro 8081" -Direction Inbound -Protocol TCP -LocalPort 8081 -Action Allow
+```
 
 ---
 

@@ -5,12 +5,13 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, select
 
-from database import create_db_and_tables, get_session
+from database import create_db_and_tables, engine, get_session
 from models import (
     BlockedUrl, BlockedUrlCreate, BlockedUrlUpdate,
     Group, GroupCreate, GroupUpdate,
     Settings, PinVerifyRequest, PinSetRequest,
 )
+
 
 app = FastAPI(title="Site Blocker API", version="1.0.0")
 
@@ -26,8 +27,8 @@ app.add_middleware(
 def on_startup():
     create_db_and_tables()
     # Ensure a Settings row exists
-    with Session(next(iter([].__class__.__mro__))) as _:
-        pass
+    with Session(engine) as session:
+        _ensure_settings(session)
 
 
 def _ensure_settings(session: Session) -> Settings:
@@ -222,13 +223,4 @@ def get_vpn_config(session: Session = Depends(get_session)):
         select(BlockedUrl).where(BlockedUrl.is_active == True)
     ).all()
 
-    blocked = []
-    for u in active_urls:
-        blocked.append({
-            "id": u.id,
-            "url": u.url,
-            "action": u.action,
-            "redirect_url": u.redirect_url,
-        })
-
-    return {"blocked": blocked}
+    return {"blocked": [{"id": u.id, "url": u.url} for u in active_urls]}

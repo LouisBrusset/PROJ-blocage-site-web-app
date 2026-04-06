@@ -6,7 +6,7 @@ MOBILE_DIR  := $(CURDIR)/BlockApp
 help:
 	@echo ""
 	@echo "  make backend   Lance le serveur FastAPI (port 8000)"
-	@echo "  make metro     Lance Metro, le serveur JS React Native (port 8081)"
+	@echo "  make metro     Lance Metro, le serveur JS React Native (port 8082)"
 	@echo "  make android   Build et déploie l'app sur le téléphone Android"
 	@echo "  make dev       Ouvre backend + Metro dans deux onglets Windows Terminal"
 	@echo "  make clean     Supprime BDD, caches Python et artefacts de build Android"
@@ -18,10 +18,10 @@ backend:
 	cd "$(BACKEND_DIR)" && bash start.sh
 
 metro:
-	cd "$(MOBILE_DIR)" && npx react-native start
+	cd "$(MOBILE_DIR)" && npx react-native start --port 8082
 
 android:
-	cd "$(MOBILE_DIR)" && npx react-native run-android
+	cd "$(MOBILE_DIR)" && npx react-native run-android --port 8082 --verbose
 
 # ── Tout lancer en une commande ───────────────────────────────────────────────
 # Ouvre deux onglets dans Windows Terminal (wt.exe) :
@@ -30,7 +30,7 @@ android:
 # Requiert Windows Terminal installé (winget install Microsoft.WindowsTerminal)
 
 dev:
-	wt.exe new-tab --title "Backend" -- wsl.exe bash -c "cd '$(BACKEND_DIR)' && bash start.sh; exec bash" \; new-tab --title "Metro" -- wsl.exe bash -c "cd '$(MOBILE_DIR)' && npx react-native start; exec bash"
+	wt.exe new-tab --title "Backend" -- wsl.exe bash -c "cd '$(BACKEND_DIR)' && bash start.sh; exec bash" \; new-tab --title "Metro" -- wsl.exe bash -c "cd '$(MOBILE_DIR)' && npx react-native start --port 8082; exec bash"
 
 # ── Nettoyage ─────────────────────────────────────────────────────────────────
 
